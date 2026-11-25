@@ -3,6 +3,9 @@ const Hosts = {
     currentHosts: {},
     currentConfig: null,
     editingHostOriginal: null, // Store original host data when editing
+    // Host key shown in the edit modal: { key, type, fingerprint } or null, and
+    // whether it differs from what is stored (sent as host_key on Save).
+    hostKeyState: { stored: null, current: null, changed: false },
     availablePemFiles: [], // Store available PEM files
     listState: {
         search: '',
@@ -169,6 +172,22 @@ const Hosts = {
                                             <option value="">None - connect directly</option>
                                         </select>
                                         <div class="form-text">The bastion (jump host) is logged into first with its own credentials; this host is then reached through it. Only SSH hosts that do not use a bastion themselves can be chosen (single hop).</div>
+                                    </div>
+                                    <div class="mb-3" id="hostKeySection">
+                                        <label class="form-label">Host key</label>
+                                        <div class="border rounded p-2">
+                                            <div id="hostKeyStatus" class="small"></div>
+                                            <div id="hostKeyScanResult" class="small mt-2" style="display: none;"></div>
+                                            <div class="mt-2 d-flex flex-wrap gap-2">
+                                                <button type="button" class="btn btn-sm btn-outline-primary" id="hostKeyCheckBtn" onclick="Hosts.checkHostKey()">
+                                                    <i class="fas fa-fingerprint"></i> Check now
+                                                </button>
+                                                <button type="button" class="btn btn-sm btn-outline-danger" id="hostKeyForgetBtn" onclick="Hosts.forgetHostKey()">
+                                                    <i class="fas fa-eraser"></i> Forget key
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div class="form-text">Identifies the server, like an entry in <code>known_hosts</code>. A server that presents a different key is refused until you trust the new key here. Compare the fingerprint with the output of <code>ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code> on the server.</div>
                                     </div>
                                 </div>
                                 
@@ -650,6 +669,12 @@ const Hosts = {
             const viaBastion = safeBastion ? `<br><small class="text-muted" title="Connects through bastion host ${safeBastion}"><i class="fas fa-route me-1"></i>via ${safeBastion}</small>` : '';
             const safeUsername = Utils.escapeHtml(String(host.username || ''));
             const hostType = host.connection_type === 'winrm' ? 'winrm' : 'ssh';
+            let hostKeyIcon = '';
+            if (hostType === 'ssh') {
+                hostKeyIcon = host.host_key_fingerprint
+                    ? ` <i class="fas fa-key text-success" title="Host key recorded: ${Utils.escapeHtml(String(host.host_key_type || ''))} ${Utils.escapeHtml(String(host.host_key_fingerprint))}"></i>`
+                    : ' <i class="fas fa-key text-muted" style="opacity: .45" title="No host key recorded yet"></i>';
+            }
             const checked = this.selectedHostIds.has(hostId) ? 'checked' : '';
             return `
                 <tr>
@@ -658,7 +683,7 @@ const Hosts = {
                         aria-label="Select ${safeId}"></td>
                     <td><button type="button" class="commands-command-name d-block border-0 bg-transparent p-0 text-start" data-host-id="${safeId}" onclick="Hosts.editHost(this.dataset.hostId)" aria-label="Edit ${safeId}" title="Edit ${safeId}">${safeId}</button></td>
                     <td><span class="hosts-address-text" title="${safeAddress}">${safeAddress}</span>${viaBastion}</td>
-                    <td><span class="commands-host-badge is-${hostType}"><i class="fas fa-server"></i>${hostType.toUpperCase()}</span></td>
+                    <td><span class="commands-host-badge is-${hostType}"><i class="fas fa-server"></i>${hostType.toUpperCase()}</span>${hostKeyIcon}</td>
                     <td><span class="hosts-username-text" title="${safeUsername}">${safeUsername || '&mdash;'}</span></td>
                     <td class="commands-number-cell">${Number(host.port) || '&mdash;'}</td>
                     <td class="commands-number-cell">${commandCount}</td>
@@ -755,6 +780,7 @@ const Hosts = {
         $('#hostId').parent().find('.form-text').text('Unique identifier for this host');
         this.populateBastionSelect(null);
         $('#hostBastionRef').val('');
+        this.resetHostKeyState(null);
         this.toggleConnectionFields();
         $('#hostModal').modal('show');
     },
@@ -825,11 +851,92 @@ const Hosts = {
 
         this.populateBastionSelect(hostId);
         $('#hostBastionRef').val(host.bastion_host_ref || '');
+        this.resetHostKeyState(host);
         
         this.toggleConnectionFields();
         $('#hostModal').modal('show');
     },
     
+    // ---- Host key (SSH) ----
+    resetHostKeyState(host) {
+        const stored = host && host.host_key
+            ? { key: host.host_key, type: host.host_key_type || '', fingerprint: host.host_key_fingerprint || '' }
+            : null;
+        this.hostKeyState = { stored, current: stored, changed: false };
+        $('#hostKeyScanResult').hide().empty();
+        this.renderHostKeyStatus();
+    },
+
+    hostKeyLabel(key) {
+        return `<code>${Utils.escapeHtml(String(key.type || ''))} ${Utils.escapeHtml(String(key.fingerprint || key.key || ''))}</code>`;
+    },
+
+    renderHostKeyStatus() {
+        const state = this.hostKeyState;
+        const isSaved = $('#hostId').attr('data-mode') !== 'create';
+        let html;
+        if (state.current) {
+            html = `<i class="fas fa-key text-success me-1"></i>${this.hostKeyLabel(state.current)}`;
+        } else if (isSaved) {
+            html = '<i class="fas fa-key text-muted me-1"></i>Not recorded yet. With trust on first use, the next connection records the key; with strict checking, use Check now and trust the key first.';
+        } else {
+            html = '<i class="fas fa-key text-muted me-1"></i>Recorded on the first connection after the host is saved.';
+        }
+        if (state.changed) {
+            html += '<div class="text-warning mt-1"><i class="fas fa-exclamation-triangle me-1"></i>Not saved yet: click Save Host to apply this change.</div>';
+        }
+        $('#hostKeyStatus').html(html);
+        $('#hostKeyCheckBtn').prop('disabled', !isSaved)
+            .attr('title', isSaved ? 'Read the key the server presents now' : 'Save the host first');
+        $('#hostKeyForgetBtn').toggle(!!state.current);
+    },
+
+    // Read the key the server presents right now and compare it with the stored one.
+    // Uses the saved address of the host, not unsaved edits in this form.
+    async checkHostKey() {
+        const hostId = $('#hostId').attr('data-original-id') || $('#hostId').val().trim();
+        const box = $('#hostKeyScanResult');
+        box.show().html('<i class="fas fa-spinner fa-spin me-1"></i>Contacting the host…');
+        let response;
+        try {
+            response = await API.config.scanHostKey(hostId);
+        } catch (error) {
+            response = { success: false, error: 'Request failed' };
+        }
+        if (!response.success) {
+            box.html(`<span class="text-danger"><i class="fas fa-times-circle me-1"></i>${Utils.escapeHtml(String(response.error || 'Could not read the host key'))}</span>`);
+            return;
+        }
+        const data = response.data;
+        const presented = { key: data.presented_key, type: data.presented_type, fingerprint: data.presented_fingerprint };
+        this.hostKeyPresented = presented;
+        if (data.match) {
+            box.html('<span class="text-success"><i class="fas fa-check-circle me-1"></i>The server presents the stored key.</span>');
+            return;
+        }
+        const heading = data.stored_fingerprint
+            ? '<div class="text-danger fw-bold"><i class="fas fa-exclamation-triangle me-1"></i>The server presents a DIFFERENT key than the stored one.</div><div>Trust it only if you know the server was reinstalled or its keys were regenerated.</div>'
+            : '<div><i class="fas fa-info-circle me-1"></i>The server presents this key. Compare the fingerprint with the server before trusting it.</div>';
+        box.html(`${heading}
+            <div class="mt-1">Presented: ${this.hostKeyLabel(presented)}</div>
+            <button type="button" class="btn btn-sm btn-warning mt-2" onclick="Hosts.trustPresentedHostKey()"><i class="fas fa-check"></i> Trust ${data.stored_fingerprint ? 'new' : 'this'} key</button>`);
+    },
+
+    trustPresentedHostKey() {
+        if (!this.hostKeyPresented) return;
+        this.hostKeyState.current = this.hostKeyPresented;
+        this.hostKeyState.changed = true;
+        $('#hostKeyScanResult').hide().empty();
+        this.renderHostKeyStatus();
+    },
+
+    forgetHostKey() {
+        this.hostKeyState.current = null;
+        this.hostKeyState.changed = !!this.hostKeyState.stored;
+        $('#hostKeyScanResult').hide().empty();
+        this.renderHostKeyStatus();
+    },
+
     // Toggle connection type fields
     toggleConnectionFields() {
         const type = $('#hostType').val();
@@ -922,6 +1029,17 @@ const Hosts = {
                 }
                 // Always sent: "" switches the host back to a direct connection
                 hostData.bastion_host_ref = $('#hostBastionRef').val() || '';
+                // Host key: sent only when changed here (trusted or forgotten). Left
+                // out otherwise, so the server keeps the stored key, or drops it when
+                // the address changes. A renamed host (created anew below) carries
+                // its key along while the address stays the same.
+                const original = this.editingHostOriginal;
+                const sameAddress = original && original.host === hostData.host && Number(original.port || 22) === Number(hostData.port || 22);
+                if (this.hostKeyState.changed) {
+                    hostData.host_key = this.hostKeyState.current ? this.hostKeyState.current.key : '';
+                } else if (!isNewHost && originalHostId && originalHostId !== $('#hostId').val().trim() && sameAddress && this.hostKeyState.stored) {
+                    hostData.host_key = this.hostKeyState.stored.key;
+                }
             } else if (hostData.connection_type === 'winrm') {
                 hostData.winrm_https = $('#hostUseSSL').is(':checked');
                 hostData.winrm_insecure = $('#hostInsecure').is(':checked');

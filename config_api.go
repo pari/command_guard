@@ -164,6 +164,13 @@ func (ca *ConfigAPI) HandleUpdateConfig(w http.ResponseWriter, r *http.Request) 
 							}
 						}
 					}
+					// A host key recorded since the page loaded its copy must not be
+					// lost; it is forgotten only through the host's own API.
+					if _, has := newHost["host_key"]; !has && !hostAddressChanged(existingHost, newHost) {
+						if val, ok := existingHost["host_key"]; ok {
+							newHost["host_key"] = val
+						}
+					}
 				}
 			}
 		}
@@ -221,6 +228,13 @@ func (ca *ConfigAPI) sanitizeConfig(config *Config) map[string]interface{} {
 				delete(h, "password")
 				delete(h, "pem_password")
 				delete(h, "ssh_password")
+				// The host key is public; add its fingerprint for display
+				if hostKey, _ := h["host_key"].(string); hostKey != "" {
+					if keyType, fingerprint, ok := hostKeyInfo(hostKey); ok {
+						h["host_key_type"] = keyType
+						h["host_key_fingerprint"] = fingerprint
+					}
+				}
 			}
 		}
 	}
@@ -304,6 +318,11 @@ func (ca *ConfigAPI) HandleGetHosts(w http.ResponseWriter, r *http.Request) {
 			"has_pem_password": host.PemPwd != "",
 			"bastion_host_ref": host.BastionHostRef,
 		}
+		if keyType, fingerprint, ok := hostKeyInfo(host.HostKey); ok {
+			hostData["host_key"] = strings.TrimSpace(host.HostKey)
+			hostData["host_key_type"] = keyType
+			hostData["host_key_fingerprint"] = fingerprint
+		}
 
 		if host.ConnectionType == "winrm" {
 			hostData["winrm_https"] = host.WinRMHTTPS
@@ -352,6 +371,10 @@ func (ca *ConfigAPI) HandleCreateHost(w http.ResponseWriter, r *http.Request) {
 			return httpErr(http.StatusConflict, "Host already exists")
 		}
 
+		if _, err := applyHostKeyField(nil, hostData); err != nil {
+			return err
+		}
+
 		// Add the new host
 		hosts[name] = hostData
 		return validateHostsBastions(config)
@@ -385,6 +408,7 @@ func (ca *ConfigAPI) HandleUpdateHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	hostKeyChanged := false
 	err := ca.mutateConfig(func(config map[string]interface{}) error {
 		// Get hosts section
 		hosts, ok := config["hosts"].(map[string]interface{})
@@ -420,6 +444,14 @@ func (ca *ConfigAPI) HandleUpdateHost(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// Keep the stored host key when the field is left out and the address is
+		// unchanged; "" forgets it (see applyHostKeyField)
+		changed, err := applyHostKeyField(existingHost, hostData)
+		if err != nil {
+			return err
+		}
+		hostKeyChanged = changed
+
 		// Update the host
 		hosts[hostName] = hostData
 		if err := validateHostsBastions(config); err != nil {
@@ -430,6 +462,15 @@ func (ca *ConfigAPI) HandleUpdateHost(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		sendConfigMutationError(w, err, "Failed to save configuration")
 		return
+	}
+
+	if hostKeyChanged {
+		actor, role := currentActor(r)
+		details := map[string]interface{}{"key": "none (forgotten)"}
+		if keyType, fingerprint, ok := hostKeyInfo(fmt.Sprint(hostData["host_key"])); ok {
+			details["key"] = keyType + " " + fingerprint
+		}
+		writeSecurityAudit(r, actor, role, "ssh_host_key_changed", hostName, "success", details)
 	}
 
 	sendConfigJSONSuccess(w, http.StatusOK, hostResponse(hostData), "Host updated successfully")
@@ -1373,6 +1414,12 @@ func hostResponse(hostData map[string]interface{}) map[string]interface{} {
 	pemPassword, _ := hostData["pem_password"].(string)
 	out["has_password"] = password != ""
 	out["has_pem_password"] = pemPassword != ""
+	if hostKey, _ := hostData["host_key"].(string); hostKey != "" {
+		if keyType, fingerprint, ok := hostKeyInfo(hostKey); ok {
+			out["host_key_type"] = keyType
+			out["host_key_fingerprint"] = fingerprint
+		}
+	}
 	return out
 }
 
@@ -1381,7 +1428,7 @@ func marshalOrderedJSON(config map[string]interface{}) ([]byte, error) {
 	// Define the complete field order for the config
 	fieldOrder := []string{
 		"version", "port", "bind_address", "access_url", "cron_enabled", "log_retention_days", "audit_retention_days", "dev_mode",
-		"admin_password", "totp_secret", "jwt_secret", "trusted_proxies", "users", "variables", "smtp", "scheduled_jobs_overview_email", "s3",
+		"admin_password", "totp_secret", "jwt_secret", "trusted_proxies", "ssh_host_key_checking", "users", "variables", "smtp", "scheduled_jobs_overview_email", "s3",
 		"terminals", "disk_monitor", "vnc", "hosts", "commands", "runbooks", "http_requests", "vnc_connections",
 	}
 

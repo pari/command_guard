@@ -22,6 +22,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
@@ -43,7 +44,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-const daemonVersion = "1.2.1" // 1.2.0: bastion (jump host) support in create; 1.2.1: SSH handshake deadline
+const daemonVersion = "1.3.0" // 1.2.0: bastion (jump host) support in create; 1.2.1: SSH handshake deadline; 1.3.0: host key pinning (host_key)
 
 // Frame types shared with terminals.go in cguard. Keep both in sync.
 const (
@@ -72,6 +73,7 @@ type bastionParams struct {
 	Password    string `json:"password,omitempty"`
 	PEM         string `json:"pem,omitempty"`
 	PEMPassword string `json:"pem_password,omitempty"`
+	HostKey     string `json:"host_key,omitempty"` // pinned public key; empty = not checked
 }
 
 type request struct {
@@ -88,6 +90,7 @@ type request struct {
 	Password    string `json:"password,omitempty"`
 	PEM         string `json:"pem,omitempty"`
 	PEMPassword string `json:"pem_password,omitempty"`
+	HostKey     string `json:"host_key,omitempty"` // pinned public key; empty = not checked
 	Term        string `json:"term,omitempty"`
 
 	// Terminal geometry (create, attach, resize)
@@ -408,7 +411,7 @@ func (d *daemon) create(req request) (sessionInfo, error) {
 		req.ScrollbackBytes = 2 * 1024 * 1024
 	}
 
-	cfg, err := clientConfig(req.Username, req.PEM, req.PEMPassword, req.Password)
+	cfg, err := clientConfig(req.Username, req.PEM, req.PEMPassword, req.Password, req.HostKey)
 	if err != nil {
 		return sessionInfo{}, err
 	}
@@ -431,7 +434,7 @@ func (d *daemon) create(req request) (sessionInfo, error) {
 		if bastion.Port <= 0 {
 			bastion.Port = 22
 		}
-		bastionCfg, err := clientConfig(bastion.Username, bastion.PEM, bastion.PEMPassword, bastion.Password)
+		bastionCfg, err := clientConfig(bastion.Username, bastion.PEM, bastion.PEMPassword, bastion.Password, bastion.HostKey)
 		if err != nil {
 			return sessionInfo{}, fmt.Errorf("bastion host %q: %v", bastion.HostRef, err)
 		}
@@ -535,9 +538,39 @@ func (d *daemon) create(req request) (sessionInfo, error) {
 
 const connectTimeout = 30 * time.Second
 
-// clientConfig builds the SSH client configuration for one hop. Host key checking
-// mirrors the existing one-shot executor behaviour in cguard.
-func clientConfig(username, pem, pemPassword, password string) (*ssh.ClientConfig, error) {
+// hostKeyCheck returns the host key callback and algorithms for one hop. cguard
+// decides the policy (trust on first use, strict or off) and verifies the key
+// itself before asking for a session; it then passes the key to pin here. An empty
+// hostKey means checking is switched off in cguard.
+func hostKeyCheck(hostKey string) (ssh.HostKeyCallback, []string, error) {
+	hostKey = strings.TrimSpace(hostKey)
+	if hostKey == "" {
+		return ssh.InsecureIgnoreHostKey(), nil, nil
+	}
+	pinned, _, _, _, err := ssh.ParseAuthorizedKey([]byte(hostKey))
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid pinned host key: %v", err)
+	}
+	algorithms := []string{pinned.Type()}
+	if pinned.Type() == ssh.KeyAlgoRSA {
+		algorithms = []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSA}
+	}
+	callback := func(_ string, _ net.Addr, key ssh.PublicKey) error {
+		if bytes.Equal(key.Marshal(), pinned.Marshal()) {
+			return nil
+		}
+		return fmt.Errorf("HOST KEY CHANGED: expected %s %s but the server presented %s %s; the session was not opened",
+			pinned.Type(), ssh.FingerprintSHA256(pinned), key.Type(), ssh.FingerprintSHA256(key))
+	}
+	return callback, algorithms, nil
+}
+
+// clientConfig builds the SSH client configuration for one hop.
+func clientConfig(username, pem, pemPassword, password, hostKey string) (*ssh.ClientConfig, error) {
+	hostKeyCallback, hostKeyAlgorithms, err := hostKeyCheck(hostKey)
+	if err != nil {
+		return nil, err
+	}
 	authMethods := []ssh.AuthMethod{}
 	if pem != "" {
 		var signer ssh.Signer
@@ -562,10 +595,11 @@ func clientConfig(username, pem, pemPassword, password string) (*ssh.ClientConfi
 		}))
 	}
 	return &ssh.ClientConfig{
-		User:            username,
-		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         connectTimeout,
+		User:              username,
+		Auth:              authMethods,
+		HostKeyCallback:   hostKeyCallback,
+		HostKeyAlgorithms: hostKeyAlgorithms,
+		Timeout:           connectTimeout,
 	}, nil
 }
 

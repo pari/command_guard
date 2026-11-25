@@ -198,6 +198,7 @@ curl -X POST http://localhost:8080/api/auth/login \
 5. **Network Segmentation**: Restrict access to management networks
 6. **Regular Token Rotation**: Update bearer tokens periodically
 7. **Audit Logging**: Monitor logs for unauthorized access attempts
+8. **SSH Host Keys**: Compare the fingerprints recorded on the Hosts page with the servers' own, and never switch `ssh_host_key_checking` to `off` in production
 
 ---
 
@@ -269,6 +270,7 @@ Dashboard
 - **Password**: Authentication password (optional with PEM)
 - **PEM File**: Path to SSH private key
 - **PEM Password**: Password for encrypted keys
+- **Host key** (SSH): the server's public key, shown as type and SHA256 fingerprint; see [SSH host key verification](#ssh-host-key-verification)
 
 ### Command Management Interface
 
@@ -595,7 +597,10 @@ Adds a new host.
 ```
 
 #### PUT /api/config/hosts/{host_id}
-Updates an existing host.
+Updates an existing host. `password`, `pem_password`, `bastion_host_ref` and `host_key` are kept when left out. `host_key` is dropped when `host` or `port` changes without a new key; send `"host_key": ""` to forget it.
+
+#### POST /api/config/hosts/{host_id}/host-key/scan
+Reads the key the SSH host presents right now, without logging in to it and without changing anything. Returns `stored_key`, `stored_type`, `stored_fingerprint` (when a key is stored), `presented_key`, `presented_type`, `presented_fingerprint`, `match` and the current `mode`. To accept the presented key, send it as `host_key` in a host update.
 
 #### DELETE /api/config/hosts/{host_id}
 Deletes a host (if not in use).
@@ -760,6 +765,38 @@ Hosts that are only reachable from a bastion can reference another SSH host with
 - Commands, RunBooks, Disk Monitor checks and persistent terminals all go through the bastion automatically. Terminals need the `cg_sessiond` daemon version 1.2.0 or newer; if an older daemon is still running, opening a terminal on such a host shows a message asking to restart the daemon (which ends open terminal sessions).
 - The bastion's SSH server must allow TCP forwarding (`AllowTcpForwarding yes`, and `PermitOpen` must include the target). If it refuses, the error names the bastion and the sshd option to check.
 - A host that other hosts use as bastion cannot be deleted or renamed until those references are removed.
+
+### SSH host key verification
+
+CommandGuard checks that an SSH host is the machine it was before, the way OpenSSH does with `known_hosts`. Each SSH host stores one public key in `config.json`:
+
+```json
+"web-01": {
+  "connection_type": "ssh", "host": "192.0.2.10", "port": 22, "username": "deploy",
+  "pem_file": "./pem_files/deploy.pem",
+  "host_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI..."
+}
+```
+
+The top-level setting `ssh_host_key_checking` (App Settings > General Settings > **SSH Host Key Checking**) decides what happens when a host has no stored key:
+
+| Value | Behaviour |
+|---|---|
+| `tofu` (default, also when the key is absent) | Trust on first use: the first connection records the key the server presents. |
+| `strict` | The host is refused until an admin has stored its key. |
+| `off` | Host keys are not checked. Not recommended. |
+
+In `tofu` and `strict`, a server that presents a **different** key than the stored one is always refused. The command, RunBook step, disk check, terminal or VNC tunnel fails with `HOST KEY CHANGED for <host>` and both fingerprints, and the security audit log gets an `ssh_host_key_mismatch` entry (at most one per host and key per hour).
+
+- **On the Hosts page** a green key icon marks hosts with a recorded key. The Edit Host dialog shows the key type and fingerprint, with **Check now** (reads the key the server presents and compares it), **Trust new key** / **Trust this key** (after a check) and **Forget key**. Trust and Forget take effect when you click **Save Host**.
+- **Verify a fingerprint** on the server itself: `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` (or the `rsa` / `ecdsa` file matching the key type shown).
+- **After a server is reinstalled** or its keys are regenerated: open the host, click **Check now**, compare the fingerprint, **Trust new key**, **Save Host**.
+- **Pin keys by hand** (for `strict`): put the line from `ssh-keyscan -t ed25519 <host>` (without the leading host name) into `host_key`, after checking it against the server.
+- Changing a host's address or port drops its stored key, because it may now be another machine. Renaming a host keeps it.
+- A bastion host is checked with its own key, and the target behind it with the target's key.
+- **Upgrading from a version before 0.8.0** needs no action: with the default `tofu`, every existing host is recorded on its next connection. Audit entries `ssh_host_key_learned` show when.
+- `--validate` rejects an unparsable `host_key` or an unknown `ssh_host_key_checking` value, and warns when checking is `off` or when `strict` is set and a host has no key.
+- Only plain host keys are supported, not SSH host certificates. WinRM hosts are not affected.
 
 ### WinRM Host Configuration
 

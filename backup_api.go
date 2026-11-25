@@ -610,6 +610,9 @@ func validateRestoredConfig(configData []byte, hasEmailTpl bool, pemFiles map[st
 	if config.Port <= 0 || config.Port > 65535 {
 		return fmt.Errorf("invalid service port: %d", config.Port)
 	}
+	if problems, _ := hostKeyConfigProblems(&config); len(problems) > 0 {
+		return fmt.Errorf("%s", problems[0])
+	}
 	if err := resolveBastionHosts(config.Hosts); err != nil {
 		return fmt.Errorf("invalid hosts configuration: %v", err)
 	}

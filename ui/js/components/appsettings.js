@@ -72,6 +72,7 @@ const AppSettings = {
             cron_enabled: $('#appCronEnabled').val(),
             dev_mode: $('#appDevMode').is(':checked'),
             log_retention_days: parseInt($('#appLogRetentionDays').val()) || 0,
+            ssh_host_key_checking: $('#appSSHHostKeyChecking').val() || 'tofu',
             max_terminal_sessions: Number($('#appMaxTerminalSessions').val()) || 0,
             image_retention_days: Number($('#appImageRetentionDays').val()) || 0,
             vnc_enabled: $('#appVncEnabled').is(':checked'),
@@ -207,6 +208,19 @@ const AppSettings = {
                                         <label class="form-label">Local Log Retention Days</label>
                                         <input type="number" class="form-control" id="appLogRetentionDays" min="1" max="365" placeholder="3">
                                         <div class="form-text">Automatically delete local log files older than this many days (default: 3)</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label" for="appSSHHostKeyChecking">SSH Host Key Checking</label>
+                                        <select class="form-select" id="appSSHHostKeyChecking">
+                                            <option value="tofu">Trust on first use (default)</option>
+                                            <option value="strict">Strict: approved keys only</option>
+                                            <option value="off">Off (not recommended)</option>
+                                        </select>
+                                        <div class="form-text">Trust on first use records a host's key on the first connection. Strict refuses a host until its key is approved on the Hosts page. In both, a host whose key changes is refused. Off accepts any key.</div>
                                     </div>
                                 </div>
                             </div>
@@ -375,6 +389,7 @@ const AppSettings = {
         $('#appCronEnabled').val(cfg.cron_enabled || 'Y');
         $('#appDevMode').prop('checked', cfg.dev_mode === true);
         $('#appLogRetentionDays').val(cfg.log_retention_days || '');
+        $('#appSSHHostKeyChecking').val(cfg.ssh_host_key_checking || 'tofu');
         $('#appMaxTerminalSessions').val(cfg.terminals?.max_sessions_per_user || '');
         $('#appImageRetentionDays').val(cfg.terminals?.image_retention_days || '');
         $('#appVncEnabled').prop('checked', cfg.vnc?.enabled !== false);
@@ -395,6 +410,7 @@ const AppSettings = {
             cron_enabled: cfg.cron_enabled || 'Y',
             dev_mode: cfg.dev_mode === true,
             log_retention_days: cfg.log_retention_days || 0,
+            ssh_host_key_checking: cfg.ssh_host_key_checking || 'tofu',
             max_terminal_sessions: cfg.terminals?.max_sessions_per_user || 0,
             image_retention_days: cfg.terminals?.image_retention_days || 0,
             vnc_enabled: cfg.vnc?.enabled !== false,
@@ -466,6 +482,8 @@ const AppSettings = {
             fullConfig.cron_enabled = newValues.cron_enabled;
             fullConfig.dev_mode = newValues.dev_mode;
             fullConfig.log_retention_days = newValues.log_retention_days;
+            if (newValues.ssh_host_key_checking === 'tofu') delete fullConfig.ssh_host_key_checking; // the default
+            else fullConfig.ssh_host_key_checking = newValues.ssh_host_key_checking;
             // Only these keys: the block also holds other settings and the shared Agent Session presets.
             const terminals = fullConfig.terminals || {};
             const setOrClear = (key, value) => {

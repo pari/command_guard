@@ -565,15 +565,7 @@ func setupTestRoutes() *http.ServeMux {
 			sendJSONError(w, 405, "Method not allowed")
 		}
 	}))
-	mux.HandleFunc("/api/config/hosts/", authManager.AdminMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPut {
-			configAPI.HandleUpdateHost(w, r)
-		} else if r.Method == http.MethodDelete {
-			configAPI.HandleDeleteHost(w, r)
-		} else {
-			sendJSONError(w, 405, "Method not allowed")
-		}
-	}))
+	mux.HandleFunc("/api/config/hosts/", authManager.AdminMiddleware(configAPI.HandleHostItem))
 	mux.HandleFunc("/api/config/commands", authManager.AdminMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			configAPI.HandleGetCommands(w, r)

@@ -33,7 +33,7 @@ If a request seems technically wrong, contradicts the architecture, or mixes up 
 - **Remote Desktops (VNC)**: noVNC in the browser, direct or through an SSH tunnel; the server authenticates to the VNC server so passwords never reach the browser; see `docs/vnc.md`.
 - **Users & Security**: built-in `admin` plus regular users with explicit grants (commands, RunBooks, HTTP requests, terminal hosts, remote desktops), IP / weekday / time-of-day sign-in policies, temporary any-IP access, login lockout and a security audit log; see `docs/multi-user.md`.
 - **Overview & Dashboard**: day view of expected vs observed scheduled runs, with an optional daily overview email.
-- **Operations**: bastion (jump) hosts, hot config reload, encrypted backup and restore, PEM key management, global variables, SMTP settings, `--validate` for CI.
+- **Operations**: SSH host key verification, bastion (jump) hosts, hot config reload, encrypted backup and restore, PEM key management, global variables, SMTP settings, `--validate` for CI.
 
 ## Repository layout
 
@@ -51,6 +51,7 @@ If a request seems technically wrong, contradicts the architecture, or mixes up 
 | `log_access.go`, `log_chunk.go`, `log_interrupt.go` | Per-user log access rules, ranged log reads, marking logs interrupted by a restart |
 | `smtp_transport.go` | SMTP sending (TLS/SSL/none) |
 | `disk_monitor*.go` | Disk Monitor config/API, df runner, state, scheduler, alerts, email bodies |
+| `ssh_hostkeys.go` | SSH host key verification: modes, trust-on-first-use recording, probe handshake, `host_key` rules for host create/update, `/api/config/hosts/{id}/host-key/scan` |
 | `terminals*.go`, `sessiond/` | Terminal REST/WebSocket bridge, Agent Sessions, image/file upload; `sessiond/` is the `cg_sessiond` daemon |
 | `vnc.go`, `vnc_rfb.go`, `vnc_sessions.go` | VNC config/API, RFB handshake and filter, runtime sessions |
 | `version.go` | `AppVersion` (stamped into `config.json` as `version`) |
@@ -79,7 +80,7 @@ cd instance
 First start: when `admin_password` is empty, the sign-in page asks for a new admin password (12–128 characters) and enrolls TOTP. A single CTRL+C shuts down gracefully (10 s grace period).
 
 ### --validate checks
-JSON syntax, duplicate command IDs and host names, references (Command hosts, RunBook steps, bastions), missing PEM files, cron expressions, output size formats, negative timeouts, undefined `${{ENV}}` / `{{config}}` variables, the HTTP request, user/security, terminals and Agent Session, Disk Monitor and VNC blocks. It also warns about risky settings: dangerous commands without a bearer token, email without SMTP, incomplete S3 settings, skipped TLS verification, unencrypted direct VNC. Warnings do not fail validation.
+JSON syntax, duplicate command IDs and host names, references (Command hosts, RunBook steps, bastions), missing PEM files, SSH host keys and `ssh_host_key_checking`, cron expressions, output size formats, negative timeouts, undefined `${{ENV}}` / `{{config}}` variables, the HTTP request, user/security, terminals and Agent Session, Disk Monitor and VNC blocks. It also warns about risky settings: dangerous commands without a bearer token, email without SMTP, incomplete S3 settings, skipped TLS verification, unencrypted direct VNC, host key checking switched off or `strict` with hosts that have no key. Warnings do not fail validation.
 
 ## Configuration
 
@@ -94,13 +95,14 @@ Top-level keys of `config.json` (see `type Config` in `main.go`):
 | `dev_mode` | Development bypasses; must be `false` outside development |
 | `admin_password`, `totp_secret`, `jwt_secret` | Built-in admin credentials and JWT signing key |
 | `trusted_proxies` | Proxy IPs/CIDRs whose forwarding headers are trusted |
+| `ssh_host_key_checking` | `tofu` (default), `strict` or `off`; see "SSH host key verification" |
 | `users` | Regular users and their grants/policies (bcrypt hashes) |
 | `variables` | Config variables for `{{name}}` substitution |
 | `smtp` | Mail settings |
 | `scheduled_jobs_overview_email` | Daily overview email (`enabled`, `recipient`, `hour`, `minute`, `period`, `subject`) |
 | `s3` | S3 credentials/bucket/prefix for `log_storage: "s3"` |
 | `terminals`, `disk_monitor`, `vnc` | Feature settings blocks |
-| `hosts` | Map of host ID → SSH/WinRM connection |
+| `hosts` | Map of host ID → SSH/WinRM connection (SSH hosts carry `host_key`, written by the app on first use) |
 | `commands`, `runbooks`, `http_requests`, `vnc_connections` | Saved jobs and remote desktops |
 
 Abbreviated example:
@@ -254,6 +256,7 @@ Implemented in `login_limiter.go` (in-memory; resets on restart). Applies to `/a
 |---|---|
 | `GET/PUT /api/config` | Whole config (secrets redacted on read; `vnc_connections` preserved from disk on write) |
 | `/api/config/hosts[/{id}]`, `/api/config/commands[/{id}]` | Hosts and commands CRUD |
+| `POST /api/config/hosts/{id}/host-key/scan` | Stored vs currently presented SSH host key (changes nothing) |
 | `/api/config/runbooks[/{id}]`, `/api/config/http-requests[/{id}]` | RunBooks and HTTP requests CRUD |
 | `/api/config/disk-monitor[...]`, `/api/disk-monitor/...` | Disk Monitor settings/volumes and runtime actions |
 | `/api/config/vnc-connections[...]`, `/api/vnc/...` | VNC connections, access mapping, test; runtime tickets and WebSocket |
@@ -277,7 +280,7 @@ Implemented in `login_limiter.go` (in-memory; resets on restart). Applies to `/a
 - **Client IP** comes from `getClientIP`, which trusts forwarding headers only from `trusted_proxies`.
 - **Security audit log**: `writeSecurityAudit` (`audit.go`) writes sign-ins, lockouts, grant and configuration changes, terminal and VNC events under `logs/audit/`; secrets are stripped by `sanitizeAuditDetails`. Retention: `audit_retention_days`.
 - **Development mode**: with `"dev_mode": true`, password `abcdefgh` and TOTP `123456` are accepted (see `auth.go`). Default `false`; never enable it outside development.
-- **Known limitations** (SSH host keys not verified, plaintext secrets in `config.json`, JWT in `localStorage`, no built-in TLS, single admin, in-memory lockout state) are documented in `SECURITY.md`. Keep that list accurate.
+- **Known limitations** (a host's key is trusted on its first connection, plaintext secrets in `config.json`, JWT in `localStorage`, no built-in TLS, single admin, in-memory lockout state) are documented in `SECURITY.md`. Keep that list accurate.
 
 ## Logging
 - Console shows rotating stats (uptime, web requests, cron requests).
@@ -381,6 +384,17 @@ An SSH host may set `bastion_host_ref` to the ID of another SSH Host. The app lo
 - Deleting a host that other hosts use as bastion is refused (HTTP 409, and the UI locks the ID / disables Delete: `getHostBastionDependents` in `hosts.js`). `PUT /api/config/hosts/{id}` keeps the stored `bastion_host_ref` when the key is absent; send `""` to go back to a direct connection.
 - The bastion must allow TCP forwarding (`AllowTcpForwarding yes` / `PermitOpen`); refusals and unreachable targets are reported with the bastion's name in the error.
 
+### SSH host key verification
+Implemented in `ssh_hostkeys.go`; user documentation in `docs/user-manual.md`.
+- Each SSH host stores one public key in `hosts.<id>.host_key` (authorized_keys form). `ssh_host_key_checking` is `tofu` (default: the first connection records the key), `strict` (no stored key = refused) or `off`.
+- `sshClientConfig` gets its `HostKeyCallback` and `HostKeyAlgorithms` from `hostKeyVerifier(host)`, so every connection made by `SSHExecutor.Connect` is covered: Commands, RunBooks, Disk Monitor, terminal file uploads, VNC tunnels and both bastion hops. A pinned host is offered only the algorithms of its stored key; an unpinned host is offered every plain algorithm and no host certificates.
+- `Host.ID` (`json:"-"`, set by `resolveBastionHosts`, also on the `Bastion` copy) tells the callback which host to record. `storedHostKey` always prefers the loaded config over the caller's copy of the Host, so a long-lived copy cannot bypass a key recorded since.
+- `recordHostKey` writes through `mutateConfig` and re-checks inside the lock: two racing first connections end with one key, and a different key is refused. If `config.json` cannot be written the connection still succeeds and the key is recorded later.
+- A mismatch returns `*hostKeyError` ("HOST KEY CHANGED for …" with both fingerprints) and writes `ssh_host_key_mismatch` to the audit log at most once per host and key per hour. Other audit actions: `ssh_host_key_learned`, `ssh_host_key_changed` (admin trusted or forgot a key).
+- Host API rules (`applyHostKeyField`): `host_key` left out = keep, unless `host` or `port` changed (then dropped); `""` = forget; anything else must parse (HTTP 400). `PUT /api/config` keeps stored keys that the request leaves out. `GET /api/config` and the host endpoints add `host_key_type` and `host_key_fingerprint` for display; they are never stored.
+- Terminals: `handleCreate` calls `ensureHostKey` (a probe handshake that sends no credentials to the target) before asking the daemon, then passes the stored keys as `host_key` (and `bastion.host_key`); `cg_sessiond` ≥ 1.3.0 pins them. An older running daemon ignores the field, which is why the check in `cguard` must stay.
+- Frontend: "Host key" block in the host modal (`resetHostKeyState`, `checkHostKey`, `trustPresentedHostKey`, `forgetHostKey` in `hosts.js`; changes are sent on Save), key icon in the hosts table, "SSH Host Key Checking" select in `appsettings.js`.
+
 ### Host protection in the UI
 A host that is in use cannot be renamed or deleted from the Hosts page. `hosts.js` counts its users with `getHostCommandCount`, `getHostRunBookCount`, `getHostDiskVolumeCount`, `getHostAgentSessionCount`, `getHostVNCCount` and `getHostBastionDependents`.
 - **In use**: the Host ID field is read-only with a warning such as "Host ID is locked - referenced by N command(s), N RunBook(s), …", and the Delete button is disabled with a tooltip. `deleteHost()` re-checks before deleting.
@@ -411,6 +425,7 @@ When editing host configurations through the API or web UI, special care must be
 - **Imported backups are untrusted until decrypted.** `decryptBackup` caps the scrypt parameters and checks salt and nonce sizes before deriving a key.
 - **Secrets never appear in API responses**: host create/update answers go through `hostResponse`, VNC connections through `redactVNCConnection`, HTTP requests through `redactHTTPRequest`.
 - **SSH connects use `dialSSH`** (in `main.go` and again in `sessiond/main.go`), which puts a deadline on the handshake as well as the TCP connect.
+- **No SSH connection skips the host key check.** Build client configs with `sshClientConfig` (or `probeSSHHandshake` for a handshake without credentials); `ssh.InsecureIgnoreHostKey()` appears only for `ssh_host_key_checking: "off"` and, in the daemon, for a request without `host_key`. Credentials for a host are sent only after its key was accepted.
 - **Shared buffers and run snapshots are copied or locked**: `LimitedBuffer` serialises stdout/stderr writes; `cloneRunBookRun` gives API responses their own copy of a run.
 - **Toast messages are plain text.** `Utils.showSuccess` / `Utils.showError` escape their argument because Notyf renders HTML; do not pre-escape and do not pass markup.
 
@@ -453,8 +468,8 @@ Every CSS/JS include carries a version query (`?v=N`). When you change a file, b
 
 Current versions:
 - `/css/app.css`: v=57 in `index.html` and `vnc.html`; `login.html` still loads v=13 (bump it there too when login styling matters)
-- `/js/utils.js` 6, `/js/api.js` 26, `/js/auth.js` 2, `/js/router.js` 14, `/js/app.js` 5
-- `/js/components/`: overview 6, dashboard 7, status 11, hosts 18, commands 32, runbooks 14, httprequests 1, logs 8, pemfiles 7, backuprestore 3, variables 1, smtp 6, appsettings 7, userops 3, account 1, userssecurity 5, terminals 28, diskmonitor 2, remotedesktops 4
+- `/js/utils.js` 6, `/js/api.js` 27, `/js/auth.js` 2, `/js/router.js` 14, `/js/app.js` 5
+- `/js/components/`: overview 6, dashboard 7, status 11, hosts 19, commands 32, runbooks 14, httprequests 1, logs 8, pemfiles 7, backuprestore 3, variables 1, smtp 6, appsettings 8, userops 3, account 1, userssecurity 5, terminals 28, diskmonitor 2, remotedesktops 4
 - `/js/title-flash-worker.js` v=1: loaded by `new Worker()` in `terminals.js`; bump it there
 - `/js/vnc-viewer.js` v=3: imported by `remotedesktops.js` and `vnc-popout.js`; bump it there. `/js/vnc-popout.js` v=3 in `vnc.html`
 - noVNC is versioned by its folder `novnc-1.7.0/` (its internal relative imports carry no query string)

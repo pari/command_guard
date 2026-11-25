@@ -180,6 +180,13 @@ type Host struct {
 	// SSH-specific fields
 	PemFile string `json:"pem_file,omitempty"`     // Path to PEM key file
 	PemPwd  string `json:"pem_password,omitempty"` // Password for encrypted PEM
+	// HostKey is the host's public key in authorized_keys form ("ssh-ed25519 AAAA…").
+	// It is recorded on the first connection (see ssh_hostkeys.go) or set by an admin;
+	// a server presenting another key is refused.
+	HostKey string `json:"host_key,omitempty"`
+	// ID is the host's key in the hosts map, filled by resolveBastionHosts at config
+	// load and never written to config.json.
+	ID string `json:"-"`
 
 	// Bastion (jump host): ID of another SSH Host that is logged into first; this
 	// host is then reached through a TCP forward opened on that connection.
@@ -254,15 +261,16 @@ type Config struct {
 	Port               int      `json:"port"`
 	BindAddress        string   `json:"bind_address,omitempty"` // IP to bind to, defaults to "0.0.0.0"
 	AccessURL          string   `json:"access_url,omitempty"`
-	CronEnabled        string   `json:"cron_enabled,omitempty"`         // "Y" or "N", defaults to "Y"
-	LogRetentionDays   int      `json:"log_retention_days"`             // Auto-delete local logs older than N days (default: 3)
-	AuditRetentionDays int      `json:"audit_retention_days,omitempty"` // Auto-delete security audit files older than N days (default: 90)
-	DevMode            bool     `json:"dev_mode"`                       // Development mode (enables auth bypasses), defaults to false
-	AdminPassword      string   `json:"admin_password,omitempty"`       // Admin UI password (stored after first setup)
-	TOTPSecret         string   `json:"totp_secret,omitempty"`          // 2FA TOTP secret (stored after first setup)
-	JWTSecret          string   `json:"jwt_secret,omitempty"`           // JWT signing secret (auto-generated and persisted)
-	TrustedProxies     []string `json:"trusted_proxies,omitempty"`      // Socket peers allowed to supply forwarding headers
-	Users              []User   `json:"users,omitempty"`                // Role-based regular user accounts
+	CronEnabled        string   `json:"cron_enabled,omitempty"`          // "Y" or "N", defaults to "Y"
+	LogRetentionDays   int      `json:"log_retention_days"`              // Auto-delete local logs older than N days (default: 3)
+	AuditRetentionDays int      `json:"audit_retention_days,omitempty"`  // Auto-delete security audit files older than N days (default: 90)
+	DevMode            bool     `json:"dev_mode"`                        // Development mode (enables auth bypasses), defaults to false
+	AdminPassword      string   `json:"admin_password,omitempty"`        // Admin UI password (stored after first setup)
+	TOTPSecret         string   `json:"totp_secret,omitempty"`           // 2FA TOTP secret (stored after first setup)
+	JWTSecret          string   `json:"jwt_secret,omitempty"`            // JWT signing secret (auto-generated and persisted)
+	TrustedProxies     []string `json:"trusted_proxies,omitempty"`       // Socket peers allowed to supply forwarding headers
+	SSHHostKeyChecking string   `json:"ssh_host_key_checking,omitempty"` // tofu (default), strict or off; see ssh_hostkeys.go
+	Users              []User   `json:"users,omitempty"`                 // Role-based regular user accounts
 	// Data sections (always at bottom of config.json)
 	Variables                  map[string]interface{}            `json:"variables,omitempty"` // User-defined variables
 	SMTP                       *SMTPConfig                       `json:"smtp,omitempty"`
@@ -1493,6 +1501,7 @@ func checkBastionRef(name string, host Host, hosts map[string]Host) (*Host, erro
 		return nil, fmt.Errorf("bastion host '%s' (used by host '%s') has no authentication method (neither password nor PEM key)", ref, name)
 	}
 	bastion.Bastion = nil
+	bastion.ID = ref
 	normalizeHost(&bastion)
 	return &bastion, nil
 }
@@ -1509,6 +1518,7 @@ func resolveBastionHosts(hosts map[string]Host) error {
 			return err
 		}
 		host.Bastion = bastion
+		host.ID = name
 		hosts[name] = host
 	}
 	return nil
@@ -1596,11 +1606,17 @@ func sshClientConfig(host Host, connectTimeout time.Duration) (*ssh.ClientConfig
 		}))
 	}
 
+	hostKeyCallback, hostKeyAlgorithms, err := hostKeyVerifier(host)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	return &ssh.ClientConfig{
-		User:            host.Username,
-		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         connectTimeout,
+		User:              host.Username,
+		Auth:              authMethods,
+		HostKeyCallback:   hostKeyCallback,
+		HostKeyAlgorithms: hostKeyAlgorithms,
+		Timeout:           connectTimeout,
 	}, authState, nil
 }
 
@@ -1755,6 +1771,9 @@ func (e *SSHExecutor) Connect() error {
 }
 
 func explainSSHConnectError(host Host, address string, authState sshAuthAttemptState, cause error) error {
+	if explained := explainHostKeyFailure(host, cause); explained != cause {
+		return fmt.Errorf("failed to connect to SSH server: %w", explained)
+	}
 	if host.Password != "" && authState.publicKeyOffered && !authState.passwordAttempted {
 		if host.PemFile == "" {
 			return fmt.Errorf(
@@ -2112,6 +2131,9 @@ func (c *ConfigCache) loadIfChanged() error {
 				return fmt.Errorf("host '%s' has no authentication method (neither password nor PEM key)", hostName)
 			}
 		}
+	}
+	if problems, _ := hostKeyConfigProblems(&newConfig); len(problems) > 0 {
+		return errors.New(problems[0])
 	}
 	// Validate bastion references and attach the resolved bastion to each host
 	if err := resolveBastionHosts(newConfig.Hosts); err != nil {
@@ -3779,6 +3801,9 @@ func validateConfig(configFile string) error {
 		}
 	}
 	errors = append(errors, bastionRefProblems(config.Hosts)...)
+	hostKeyProblems, hostKeyWarnings := hostKeyConfigProblems(&config)
+	errors = append(errors, hostKeyProblems...)
+	warnings = append(warnings, hostKeyWarnings...)
 
 	// Validate SMTP configuration if present
 	if config.SMTP != nil {
@@ -4265,16 +4290,7 @@ func main() {
 			sendJSONResponse(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Error: "Method not allowed"})
 		}
 	}))
-	http.HandleFunc("/api/config/hosts/", authManager.AdminMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodPut:
-			configAPI.HandleUpdateHost(w, r)
-		case http.MethodDelete:
-			configAPI.HandleDeleteHost(w, r)
-		default:
-			sendJSONResponse(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Error: "Method not allowed"})
-		}
-	}))
+	http.HandleFunc("/api/config/hosts/", authManager.AdminMiddleware(configAPI.HandleHostItem))
 	http.HandleFunc("/api/config/commands", authManager.AdminMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:

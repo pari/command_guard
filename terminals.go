@@ -95,6 +95,7 @@ type sessiondBastion struct {
 	Password    string `json:"password,omitempty"`
 	PEM         string `json:"pem,omitempty"`
 	PEMPassword string `json:"pem_password,omitempty"`
+	HostKey     string `json:"host_key,omitempty"` // cg_sessiond >= 1.3.0
 }
 
 // sessiondMinBastionVersion is the first cg_sessiond release that understands the
@@ -119,6 +120,10 @@ type sessiondRequest struct {
 	Rows            int    `json:"rows,omitempty"`
 	ScrollbackBytes int    `json:"scrollback_bytes,omitempty"`
 	IdleKillSeconds int    `json:"idle_kill_seconds,omitempty"`
+
+	// HostKey pins the host's public key (create only; cg_sessiond >= 1.3.0, an
+	// older daemon ignores it, which is why handleCreate verifies the key itself first).
+	HostKey string `json:"host_key,omitempty"`
 
 	Bastion *sessiondBastion `json:"bastion,omitempty"` // create only; cg_sessiond >= 1.2.0
 }
@@ -781,8 +786,17 @@ func (t *TerminalsAPI) handleCreate(w http.ResponseWriter, r *http.Request, clai
 		return
 	}
 
+	// Verify the host key here (recording it on first use) before any credential
+	// leaves this process. Through a bastion this also verifies the bastion's key.
+	hostKey, err := ensureHostKey(host)
+	if err != nil {
+		writeSecurityAudit(r, claims.Username, claims.Role, "terminal_create", req.HostRef, "failed", map[string]interface{}{"host_ref": req.HostRef, "reason": "host key check"})
+		sendJSONError(w, http.StatusBadGateway, "Failed to open terminal: "+err.Error())
+		return
+	}
+
 	create := sessiondRequest{
-		Op: "create", Owner: claims.Username, Name: sanitizeTerminalName(req.Name), HostRef: req.HostRef,
+		Op: "create", HostKey: hostKey, Owner: claims.Username, Name: sanitizeTerminalName(req.Name), HostRef: req.HostRef,
 		Host: host.Host, Port: host.Port, Username: host.Username, Password: host.Password, PEMPassword: host.PemPwd,
 		Term: "xterm-256color", Cols: req.Cols, Rows: req.Rows,
 		ScrollbackBytes: settings.scrollback, IdleKillSeconds: int(settings.idleKill.Seconds()),
@@ -812,6 +826,9 @@ func (t *TerminalsAPI) handleCreate(w http.ResponseWriter, r *http.Request, clai
 		create.Bastion = &sessiondBastion{
 			HostRef: host.BastionHostRef, Host: bastion.Host, Port: bastion.Port,
 			Username: bastion.Username, Password: bastion.Password, PEMPassword: bastion.PemPwd,
+		}
+		if sshHostKeyMode() != hostKeyModeOff {
+			create.Bastion.HostKey = storedHostKey(bastion)
 		}
 		if bastion.PemFile != "" {
 			pemBytes, err := ioutil.ReadFile(bastion.PemFile)

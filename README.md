@@ -22,7 +22,7 @@ It has no database and no agent to install on the hosts: one binary, one `config
 | **Remote desktops** | VNC in the browser (noVNC), direct or through an SSH tunnel. Passwords never reach the browser. |
 | **Users and security** | TOTP two-factor sign-in, per-user grants, IP allow-lists, weekday and time-of-day windows, login lockout, and a security audit log. |
 | **Notifications** | Email (SMTP, queued) and webhooks per command and per RunBook. |
-| **Operations** | Bastion (jump) hosts, hot config reload, encrypted backup and restore, optional S3 log storage, `--validate` for CI. |
+| **Operations** | SSH host key verification (trust on first use or strict), bastion (jump) hosts, hot config reload, encrypted backup and restore, optional S3 log storage, `--validate` for CI. |
 
 <details>
 <summary>More screenshots</summary>
@@ -114,7 +114,7 @@ CommandGuard holds credentials for your servers, so treat the machine it runs on
 
 ## Project status
 
-Version 0.7.0. The author has run it in production daily since 2025, but the public project is young: expect rough edges and breaking config changes before 1.0.
+Version 0.8.0. The author has run it in production daily since 2025, but the public project is young: expect rough edges and breaking config changes before 1.0.
 
 ## Contributing
 

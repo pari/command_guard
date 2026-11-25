@@ -225,6 +225,11 @@ const API = {
             });
         },
         
+        // Reads the key the host presents now and compares it with the stored one
+        async scanHostKey(name) {
+            return API.request(`/config/hosts/${encodeURIComponent(name)}/host-key/scan`, { method: 'POST' });
+        },
+
         async deleteHost(name) {
             return API.request(`/config/hosts/${encodeURIComponent(name)}`, {
                 method: 'DELETE'
