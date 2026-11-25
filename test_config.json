@@ -1,0 +1,147 @@
+{
+	"port": 8080,
+	"bind_address": "127.0.0.1",
+	"access_url": "http://localhost:8080",
+	"cron_enabled": "N",
+	"admin_password": "testpassword123",
+	"totp_secret": "JBSWY3DPEHPK3PXP",
+	"variables": {
+		"test_var": "test_value",
+		"test_admin": "admin@test.com"
+	},
+	"smtp": {
+		"host": "smtp.gmail.com",
+		"port": 587,
+		"username": "test@test.com",
+		"password": "test-smtp-password",
+		"from": "Test SSH Executor <test@test.com>",
+		"tls": true
+	},
+	"hosts": {
+		"test-ssh-server": {
+			"connection_type": "ssh",
+			"host": "192.168.1.100",
+			"port": 22,
+			"username": "testuser",
+			"password": "testpass123"
+		},
+		"test-ssh-server-key": {
+			"connection_type": "ssh",
+			"host": "192.168.1.100",
+			"port": 22,
+			"username": "testuser",
+			"pem_file": "./test_data/test_key.pem"
+		},
+		"test-winrm-server": {
+			"connection_type": "winrm",
+			"host": "192.168.1.101",
+			"port": 5986,
+			"username": "Administrator",
+			"password": "WinTestPass123!",
+			"winrm_https": true,
+			"winrm_insecure": true
+		}
+	},
+	"commands": [
+		{
+			"cmd_id": "test-echo",
+			"host_ref": "test-ssh-server",
+			"command": "echo 'Hello from test'",
+			"description": "Test echo command",
+			"bearer_token": "test-token-123",
+			"max_output_size": "1MB"
+		},
+		{
+			"cmd_id": "test-date",
+			"host_ref": "test-ssh-server",
+			"command": "date",
+			"description": "Get current date"
+		},
+		{
+			"cmd_id": "test-pwd",
+			"host_ref": "test-ssh-server",
+			"command": "pwd",
+			"description": "Print working directory"
+		},
+		{
+			"cmd_id": "test-ls",
+			"host_ref": "test-ssh-server",
+			"command": "ls -la /tmp",
+			"description": "List temp directory",
+			"max_output_size": "500KB"
+		},
+		{
+			"cmd_id": "test-win-echo",
+			"host_ref": "test-winrm-server",
+			"command": "echo Hello from Windows",
+			"description": "Windows echo test",
+			"bearer_token": "win-token-456"
+		},
+		{
+			"cmd_id": "test-win-dir",
+			"host_ref": "test-winrm-server",
+			"command": "dir C:\\Windows\\Temp",
+			"description": "List Windows temp directory"
+		},
+		{
+			"cmd_id": "test-chain-first",
+			"host_ref": "test-ssh-server",
+			"command": "echo 'First command'",
+			"description": "First RunBook command"
+		},
+		{
+			"cmd_id": "test-chain-second",
+			"host_ref": "test-ssh-server",
+			"command": "echo 'Second command'",
+			"description": "Second in chain"
+		},
+		{
+			"cmd_id": "test-large-output",
+			"host_ref": "test-ssh-server",
+			"command": "for i in {1..1000}; do echo \"Line $i - This is a test line with some content to make it longer\"; done",
+			"description": "Generate large output",
+			"max_output_size": "10KB"
+		},
+		{
+			"cmd_id": "test-error-cmd",
+			"host_ref": "test-ssh-server",
+			"command": "exit 1",
+			"description": "Command that fails"
+		}
+	],
+	"runbooks": [
+		{
+			"runbook_id": "test-runbook",
+			"description": "Test RunBook with multiple commands",
+			"bearer_token": "runbook-token-789",
+			"steps": [
+				{
+					"step_id": "echo",
+					"cmd_id": "test-echo"
+				},
+				{
+					"step_id": "date",
+					"cmd_id": "test-date"
+				},
+				{
+					"step_id": "pwd",
+					"cmd_id": "test-pwd"
+				}
+			]
+		},
+		{
+			"runbook_id": "test-mixed-runbook",
+			"description": "RunBook with both SSH and WinRM commands",
+			"steps": [
+				{
+					"step_id": "linux-echo",
+					"cmd_id": "test-echo"
+				},
+				{
+					"step_id": "windows-echo",
+					"cmd_id": "test-win-echo"
+				}
+			]
+		}
+	]
+}

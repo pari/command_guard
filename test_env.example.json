@@ -1,0 +1,43 @@
+{
+	"_comment": "Copy this file to test_env.json and update with your actual test server details",
+	"test_servers": {
+		"ssh": {
+			"host": "192.168.1.100",
+			"port": 22,
+			"username": "testuser",
+			"password": "testpass123",
+			"pem_file_path": "./test_data/test_key.pem",
+			"_setup_notes": [
+				"1. Create a dedicated test user on your SSH server",
+				"2. Ensure the user has sudo access if needed for tests",
+				"3. Create test directories: /tmp/shexec_test",
+				"4. Set appropriate permissions"
+			]
+		},
+		"winrm": {
+			"host": "192.168.1.101",
+			"port": 5986,
+			"username": "Administrator",
+			"password": "WinTestPass123!",
+			"_setup_notes": [
+				"1. Enable WinRM: winrm quickconfig",
+				"2. Enable HTTPS: winrm quickconfig -transport:https",
+				"3. Allow unencrypted if needed: winrm set winrm/config/service @{AllowUnencrypted=\"true\"}",
+				"4. Set auth: winrm set winrm/config/service/auth @{Basic=\"true\"}",
+				"5. Create test directory: C:\\Temp\\shexec_test"
+			]
+		}
+	},
+	"smtp": {
+		"_comment": "Optional: Configure if you want to test email notifications",
+		"host": "smtp.gmail.com",
+		"port": 587,
+		"username": "your-test-email@gmail.com",
+		"password": "your-app-password",
+		"test_recipient": "test-recipient@example.com"
+	},
+	"webhook": {
+		"_comment": "Optional: Configure if you want to test webhooks",
+		"test_endpoint": "https://webhook.site/your-unique-url"
+	}
+}

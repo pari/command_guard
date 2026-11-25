@@ -1,0 +1,37 @@
+# ---- Build output ----
+shexec_go
+coverage.out
+coverage.html
+
+# ---- Your live configuration and credentials (never commit these) ----
+# Local installation built by compile_and_run.sh: binaries, config, keys, logs
+/instance/
+config.json
+config.json.*
+!config.json.sample
+*.pem
+*.key
+*.ppk
+pem_files/*
+!pem_files/index.html
+test_env.json
+test_data/
+.env
+.env.*
+
+# ---- Runtime state ----
+logs
+logs/*
+run/
+mail_queue/
+server.log
+*.log
+shexec_test_*/
+
+# ---- Local tooling ----
+.claude/settings.local.json
+CLAUDE.local.md
+node_modules/
+.DS_Store
+.idea/
+.vscode/

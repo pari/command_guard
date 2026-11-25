@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Command Guard - Login</title>
+    <link rel="icon" type="image/png" href="/commandguard.png">
+
+    <!-- Bootstrap CSS -->
+    <link href="/css/bootstrap.min.css?v=1" rel="stylesheet">
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="/css/font-awesome.min.css?v=1">
+    <!-- Notyf for notifications -->
+    <link rel="stylesheet" href="/css/notyf.min.css?v=1">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/css/app.css?v=13">
+    
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-container {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            padding: 40px;
+            max-width: 400px;
+            width: 100%;
+            margin: 20px;
+        }
+        .login-header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .login-header i {
+            font-size: 48px;
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        .qr-container {
+            text-align: center;
+            margin: 20px 0;
+        }
+        #qrcode {
+            display: inline-block;
+            padding: 10px;
+            background: white;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-header">
+            <i class="fas fa-terminal"></i>
+            <h2>Command Guard</h2>
+			<p class="text-muted">Secure sign in</p>
+        </div>
+
+        <!-- Password Login Form -->
+        <form id="loginForm">
+			<div class="mb-3"><label for="username" class="form-label">Username</label><div class="input-group"><span class="input-group-text"><i class="fas fa-user"></i></span><input type="text" class="form-control" id="username" placeholder="admin" autocomplete="username"><div class="form-text w-100">Leave blank for the built-in admin account.</div></div></div>
+            <div class="mb-3">
+				<label for="password" class="form-label">Password</label>
+                <div class="input-group">
+                    <span class="input-group-text">
+                        <i class="fas fa-lock"></i>
+                    </span>
+                    <input type="password" class="form-control" id="password" 
+                           placeholder="Enter admin password" required>
+                    <button class="btn btn-outline-secondary" type="button" id="togglePassword">
+                        <i class="fas fa-eye"></i>
+                    </button>
+                </div>
+                <div class="form-text" id="passwordHelp"></div>
+            </div>
+            <div class="mb-3">
+                <label for="loginTotpCode" class="form-label">Authenticator code</label>
+                <div class="input-group">
+                    <span class="input-group-text">
+                        <i class="fas fa-mobile-alt"></i>
+                    </span>
+                    <input type="text" class="form-control" id="loginTotpCode" placeholder="000000"
+                           inputmode="numeric" maxlength="6" pattern="[0-9]{6}" autocomplete="one-time-code">
+                </div>
+                <div class="form-text">Leave blank only on your first sign-in, before an authenticator is set up.</div>
+            </div>
+            <button type="submit" class="btn btn-primary w-100" id="loginBtn">
+                <i class="fas fa-sign-in-alt"></i> Login
+            </button>
+        </form>
+
+        <!-- 2FA Verification Form (hidden initially) -->
+        <form id="totpForm" class="d-none">
+            <div class="alert alert-info">
+                <i class="fas fa-shield-alt"></i> Set up two-factor authentication, then enter the code from your authenticator app
+            </div>
+			<div id="totpEnrollment" class="d-none"><p class="text-center">Scan this QR code before entering the generated code.</p><div class="qr-container" id="totpEnrollmentQR"></div></div>
+            <div class="mb-3">
+                <label for="totpCode" class="form-label">2FA Code</label>
+                <div class="input-group">
+                    <span class="input-group-text">
+                        <i class="fas fa-mobile-alt"></i>
+                    </span>
+                    <input type="text" class="form-control" id="totpCode" 
+                           placeholder="000000" maxlength="6" pattern="[0-9]{6}" required>
+                </div>
+            </div>
+            <button type="submit" class="btn btn-success w-100" id="verifyBtn">
+                <i class="fas fa-check"></i> Verify
+            </button>
+            <button type="button" class="btn btn-link w-100 mt-2" id="backToLogin">
+                Back to password
+            </button>
+        </form>
+
+		<form id="onboardingForm" class="d-none">
+			<div class="alert alert-warning"><i class="fas fa-shield-alt"></i> First sign-in requires a new password and TOTP enrollment.</div>
+			<p class="text-center">Scan this QR code with your authenticator app.</p><div class="qr-container" id="onboardingQR"></div>
+			<div class="mb-3"><label class="form-label" for="newPassword">New password</label><input id="newPassword" type="password" class="form-control" minlength="12" maxlength="128" autocomplete="new-password" required></div>
+			<div class="mb-3"><label class="form-label" for="confirmPassword">Confirm new password</label><input id="confirmPassword" type="password" class="form-control" minlength="12" maxlength="128" autocomplete="new-password" required></div>
+			<div class="mb-3"><label class="form-label" for="onboardingCode">Authenticator code</label><input id="onboardingCode" class="form-control" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" required></div>
+			<button class="btn btn-primary w-100" id="onboardingBtn"><i class="fas fa-check me-1"></i>Complete secure setup</button><button type="button" class="btn btn-link w-100 mt-2 back-to-login">Back to sign in</button>
+		</form>
+
+        <!-- Initial Setup Form (hidden initially) -->
+        <div id="setupForm" class="d-none">
+            <div class="alert alert-success">
+                <i class="fas fa-check-circle"></i> Initial setup complete!
+            </div>
+            <p class="text-center mb-3">
+                Scan this QR code with your authenticator app (Google Authenticator, Authy, etc.)
+            </p>
+            <div class="qr-container">
+                <div id="qrcode"></div>
+            </div>
+            <div class="alert alert-warning mt-3">
+                <i class="fas fa-exclamation-triangle"></i> 
+                <strong>Important:</strong> Save this QR code! You'll need it for all future logins.
+            </div>
+            <button type="button" class="btn btn-primary w-100" id="continueBtn">
+                <i class="fas fa-arrow-right"></i> Continue to Dashboard
+            </button>
+        </div>
+    </div>
+
+    <!-- jQuery -->
+    <script src="/js/jquery.min.js?v=1"></script>
+    <!-- Bootstrap JS -->
+    <script src="/js/bootstrap.bundle.min.js?v=1"></script>
+    <!-- Notyf for notifications -->
+    <script src="/js/notyf.min.js?v=1"></script>
+    <!-- QRCode.js for 2FA -->
+    <script src="/js/qrcode.min.js?v=1"></script>
+    
+    <script>
+        const notyf = new Notyf({
+            position: { x: 'right', y: 'top' },
+            duration: 4000
+        });
+
+        let tempToken = '';
+        let isFirstSetup = false;
+
+        // Toggle password visibility
+        $('#togglePassword').click(function() {
+            const passwordInput = $('#password');
+            const icon = $(this).find('i');
+            
+            if (passwordInput.attr('type') === 'password') {
+                passwordInput.attr('type', 'text');
+                icon.removeClass('fa-eye').addClass('fa-eye-slash');
+            } else {
+                passwordInput.attr('type', 'password');
+                icon.removeClass('fa-eye-slash').addClass('fa-eye');
+            }
+        });
+
+        // Handle login form submission
+        $('#loginForm').on('submit', async function(e) {
+            e.preventDefault();
+            
+			const username = $('#username').val().trim();
+			const password = $('#password').val();
+			const totp_code = $('#loginTotpCode').val().trim();
+            $('#loginBtn').prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> Logging in...');
+            
+            try {
+                const response = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ username, password, totp_code })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    if (data.needs_setup) {
+                        // First time setup - show QR code
+                        isFirstSetup = true;
+                        $('#loginForm').addClass('d-none');
+                        $('#setupForm').removeClass('d-none');
+                        
+                        // Generate QR code from the data URL
+                        if (data.qr_code) {
+                            const qrContainer = document.getElementById('qrcode');
+                            qrContainer.innerHTML = `<img src="${data.qr_code}" alt="2FA QR Code">`;
+                        }
+                        
+                        notyf.success('Initial setup complete! Please scan the QR code.');
+					} else if (data.token) {
+						// Username, password and authenticator code all verified
+						localStorage.setItem('auth_token', data.token);
+						notyf.success('Authentication successful!');
+						window.location.href = '/';
+					} else if (data.needs_password_change) {
+						tempToken = data.temp_token;
+						$('#loginForm').addClass('d-none'); $('#onboardingForm').removeClass('d-none');
+						if (data.qr_code) $('#onboardingQR').html(`<img src="${data.qr_code}" alt="TOTP enrollment QR code">`);
+						$('#newPassword').focus();
+					} else {
+                        // Authenticator not enrolled yet - scan QR and verify a code
+                        tempToken = data.temp_token;
+                        $('#loginForm').addClass('d-none');
+                        $('#totpForm').removeClass('d-none');
+						if (data.needs_totp_setup && data.qr_code) { $('#totpEnrollment').removeClass('d-none'); $('#totpEnrollmentQR').html(`<img src="${data.qr_code}" alt="TOTP enrollment QR code">`); } else { $('#totpEnrollment').addClass('d-none'); }
+                        $('#totpCode').focus();
+                        notyf.success('Password verified. Scan the QR code and enter your 2FA code.');
+                    }
+                } else {
+                    notyf.error(data.error || 'Invalid login credentials or OTP');
+                    $('#loginTotpCode').val('');
+                }
+            } catch (error) {
+                notyf.error('Connection error. Please try again.');
+                console.error('Login error:', error);
+            } finally {
+                $('#loginBtn').prop('disabled', false).html('<i class="fas fa-sign-in-alt"></i> Login');
+            }
+        });
+
+		$('#onboardingForm').on('submit', async function(e) {
+			e.preventDefault(); const next=$('#newPassword').val(), confirm=$('#confirmPassword').val(), code=$('#onboardingCode').val();
+			if (next !== confirm) { notyf.error('New passwords do not match.'); return; }
+			$('#onboardingBtn').prop('disabled',true).html('<i class="fas fa-spinner fa-spin"></i> Completing…');
+			try { const response=await fetch('/api/auth/complete-onboarding',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({temp_token:tempToken,new_password:next,totp_code:code})});const data=await response.json();if(!data.success){notyf.error(data.error||'Secure setup failed');return;}localStorage.setItem('auth_token',data.token);window.location.href='/'; } catch(error) { notyf.error('Connection error. Please try again.'); } finally { $('#onboardingBtn').prop('disabled',false).html('<i class="fas fa-check me-1"></i>Complete secure setup'); }
+		});
+
+        // Handle 2FA verification
+        $('#totpForm').on('submit', async function(e) {
+            e.preventDefault();
+            
+            const totpCode = $('#totpCode').val();
+            $('#verifyBtn').prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> Verifying...');
+            
+            try {
+                const response = await fetch('/api/auth/verify-2fa', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        temp_token: tempToken,
+                        totp_code: totpCode 
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    // Store token and redirect
+                    localStorage.setItem('auth_token', data.token);
+                    notyf.success('Authentication successful!');
+                    window.location.href = '/';
+                } else {
+                    notyf.error(data.error || 'Invalid 2FA code');
+                    $('#totpCode').val('').focus();
+                }
+            } catch (error) {
+                notyf.error('Connection error. Please try again.');
+                console.error('2FA error:', error);
+            } finally {
+                $('#verifyBtn').prop('disabled', false).html('<i class="fas fa-check"></i> Verify');
+            }
+        });
+
+        // Back to login button
+		$('#backToLogin, .back-to-login').click(function() {
+            $('#totpForm').addClass('d-none');
+			$('#onboardingForm').addClass('d-none');
+            $('#loginForm').removeClass('d-none');
+			$('#password').val(''); $('#loginTotpCode').val(''); $('#username').focus();
+            tempToken = '';
+        });
+
+        // Continue button after initial setup
+        $('#continueBtn').click(function() {
+            // For first setup, we need to implement a way to get the JWT token
+            // This would typically involve another API call or automatic login
+            notyf.success('Setup complete! Please login with your password and 2FA code.');
+            window.location.reload();
+        });
+
+		// Auto-focus on username field
+        $(document).ready(function() {
+			$('#username').focus();
+            
+            // Check if already logged in
+            const token = localStorage.getItem('auth_token');
+            if (token) {
+                // Validate token
+                fetch('/api/auth/validate', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.data && data.data.valid) {
+                        window.location.href = '/';
+                    }
+                });
+            }
+        });
+
+        // Handle Enter key in TOTP field
+        $('#totpCode').on('input', function() {
+            const value = $(this).val();
+            if (value.length === 6 && /^\d{6}$/.test(value)) {
+                $('#totpForm').submit();
+            }
+        });
+    </script>
+</body>
+</html>

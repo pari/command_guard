@@ -1,0 +1,56 @@
+const UserOperationUI = {
+    escape(value) { return $('<div>').text(value == null ? '' : String(value)).html(); },
+    ensureRunModal() {
+        if ($('#userRunModal').length) return;
+        $('body').append(`<div class="modal fade" id="userRunModal" tabindex="-1"><div class="modal-dialog modal-xl"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">Run result</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div id="userRunStatus" class="alert alert-info"></div><pre id="userRunOutput" class="bg-dark text-light p-3 rounded" style="max-height:60vh;overflow:auto"></pre></div><div class="modal-footer"><button class="btn btn-secondary" data-bs-dismiss="modal">Close</button></div></div></div></div>`);
+    },
+    showRunning(title) { this.ensureRunModal(); $('#userRunModal .modal-title').text(title); $('#userRunStatus').removeClass('alert-success alert-danger').addClass('alert-info').text('Running…'); $('#userRunOutput').text(''); bootstrap.Modal.getOrCreateInstance(document.getElementById('userRunModal')).show(); },
+    showResult(success, status, output) { $('#userRunStatus').removeClass('alert-info alert-success alert-danger').addClass(success ? 'alert-success' : 'alert-danger').text(status); $('#userRunOutput').text(output || 'No output returned.'); }
+};
+
+const UserCommands = {
+    items: [],
+    async init() { this.render(); await this.load(); },
+    render() { $('#mainContent').html(`<div class="commands-page"><div class="commands-page-header"><div><h1>Commands</h1><p>Run assigned Commands and manage their shared schedules.</p></div></div><div id="userCommandsList" class="commands-table-card"><div class="text-center py-5"><i class="fas fa-spinner fa-spin"></i></div></div></div>`); },
+    async load() { try { const response = await API.user.commands(); this.items = response.data || []; this.renderRows(); } catch (error) { Utils.showError(error.message || 'Failed to load Commands'); } },
+    renderRows() {
+        const e = UserOperationUI.escape;
+        const rows = this.items.map(item => `<tr><td><strong>${e(item.cmd_id)}</strong><br><small class="text-muted">${e(item.description || 'No description')}</small></td><td>${e(item.host_ref)}</td><td>${item.cron_schedule ? `<code>${e(item.cron_schedule)}</code>` : '<span class="text-muted">Manual</span>'}</td><td class="text-end"><button class="btn btn-sm btn-outline-primary me-2" onclick="UserCommands.editSchedule('${e(item.cmd_id)}')"><i class="far fa-clock me-1"></i>Schedule</button><button class="btn btn-sm btn-primary" onclick="UserCommands.run('${e(item.cmd_id)}')"><i class="fas fa-play me-1"></i>Run</button></td></tr>`).join('');
+        $('#userCommandsList').html(`<div class="commands-table-scroll"><table class="commands-table"><thead><tr><th>Command</th><th>Host</th><th>Shared schedule</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="4" class="text-center py-5">No Commands are assigned to this account.</td></tr>'}</tbody></table></div>`);
+    },
+    async run(id) { UserOperationUI.showRunning(`Run Command · ${id}`); try { const response = await API.ops.executeCommand(id); const data = response.data || {}; UserOperationUI.showResult(true, `Completed in ${data.exec_time || '—'} (exit ${data.exit_code ?? 0})`, data.output); } catch (error) { UserOperationUI.showResult(false, error.message || 'Command failed', ''); } },
+    async editSchedule(id) { const item = this.items.find(value => value.cmd_id === id); const result = await Swal.fire({ title:`Shared schedule · ${id}`, html:'<p class="text-muted">Enter a five-field cron expression, or clear it for manual execution only.</p>', input:'text', inputValue:item?.cron_schedule || '', inputPlaceholder:'0 2 * * *', showCancelButton:true, confirmButtonText:'Save schedule', inputValidator:value => value.trim() && value.trim().split(/\s+/).length !== 5 ? 'Use exactly five cron fields.' : undefined }); if (!result.isConfirmed) return; try { await API.user.commandSchedule(id, result.value.trim()); await this.load(); Utils.showSuccess('Shared schedule updated'); } catch (error) { Utils.showError(error.message || 'Failed to update schedule'); } }
+};
+
+const UserRunBooks = {
+    items: [], runs: {},
+    async init() { this.render(); await this.load(); },
+    render() { $('#mainContent').html(`<div class="commands-page"><div class="commands-page-header"><div><h1>RunBooks</h1><p>Run assigned workflows and manage their shared schedules.</p></div></div><div id="userRunBooksList" class="commands-table-card"><div class="text-center py-5"><i class="fas fa-spinner fa-spin"></i></div></div></div>`); },
+    async load() { try { const response = await API.user.runbooks(); this.items = response.data || []; await Promise.all(this.items.map(async item => { try { const history = await API.ops.getRunBookRuns(item.runbook_id); this.runs[item.runbook_id] = history.data || []; } catch (_) { this.runs[item.runbook_id] = []; } })); this.renderRows(); } catch (error) { Utils.showError(error.message || 'Failed to load RunBooks'); } },
+    renderRows() { const e=UserOperationUI.escape; const rows=this.items.map(item=>{const last=(this.runs[item.runbook_id]||[])[0];const steps=(item.steps||[]).map(step=>`<span class="badge bg-light text-dark me-1">${step.request_id?'<i class="fas fa-globe me-1"></i>':''}${e(step.label || step.cmd_id || step.request_id)}</span>`).join('');return `<tr><td><strong>${e(item.runbook_id)}</strong><br><small class="text-muted">${e(item.description||'No description')}</small></td><td>${steps}</td><td>${item.cron_schedule?`<code>${e(item.cron_schedule)}</code>`:'<span class="text-muted">Manual</span>'}</td><td>${e(window.RunBooks ? RunBooks.statusLabel(last?.status||'never run') : (last?.status||'Never run'))}</td><td class="text-end"><button class="btn btn-sm btn-outline-primary me-2" onclick="UserRunBooks.editSchedule('${e(item.runbook_id)}')"><i class="far fa-clock me-1"></i>Schedule</button><button class="btn btn-sm btn-primary" onclick="UserRunBooks.run('${e(item.runbook_id)}')"><i class="fas fa-play me-1"></i>Run</button></td></tr>`}).join('');$('#userRunBooksList').html(`<div class="commands-table-scroll"><table class="commands-table"><thead><tr><th>RunBook</th><th>Steps</th><th>Shared schedule</th><th>Last status</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="5" class="text-center py-5">No RunBooks are assigned to this account.</td></tr>'}</tbody></table></div>`); },
+    async run(id) { UserOperationUI.showRunning(`Run RunBook · ${id}`); try { const response=await API.ops.startRunBook(id); const run=response.data||{}; UserOperationUI.showResult(true,`Run accepted · ${run.run_id || ''}`,`Status: ${run.status || 'queued'}\nProgress and consolidated history remain available on this page.`); await this.load(); } catch(error) { UserOperationUI.showResult(false,error.message||'RunBook failed',''); } },
+    async editSchedule(id) { const item=this.items.find(value=>value.runbook_id===id);const result=await Swal.fire({title:`Shared schedule · ${id}`,html:'<p class="text-muted">Enter a five-field cron expression, or clear it for manual execution only.</p>',input:'text',inputValue:item?.cron_schedule||'',inputPlaceholder:'0 2 * * *',showCancelButton:true,confirmButtonText:'Save schedule',inputValidator:value=>value.trim()&&value.trim().split(/\s+/).length!==5?'Use exactly five cron fields.':undefined});if(!result.isConfirmed)return;try{await API.user.runbookSchedule(id,result.value.trim());await this.load();Utils.showSuccess('Shared schedule updated');}catch(error){Utils.showError(error.message||'Failed to update schedule');} }
+};
+
+const UserHttpRequests = {
+    items: [],
+    async init() { this.render(); await this.load(); },
+    render() { $('#mainContent').html(`<div class="commands-page"><div class="commands-page-header"><div><h1>HTTP Requests</h1><p>Run assigned HTTP requests and manage their shared schedules.</p></div></div><div id="userHttpRequestsList" class="commands-table-card"><div class="text-center py-5"><i class="fas fa-spinner fa-spin"></i></div></div></div>`); },
+    async load() { try { const response = await API.user.httpRequests(); this.items = response.data || []; this.renderRows(); } catch (error) { Utils.showError(error.message || 'Failed to load HTTP requests'); } },
+    renderRows() {
+        const e = UserOperationUI.escape;
+        const rows = this.items.map(item => `<tr><td><strong>${e(item.request_id)}</strong><br><small class="text-muted">${e(item.description || 'No description')}</small></td><td><span class="http-method-badge is-${e(String(item.method || 'GET').toLowerCase())}">${e(String(item.method || 'GET').toUpperCase())}</span> <span class="http-url-text" title="${e(item.url)}">${e(item.url)}</span></td><td>${item.cron_schedule ? `<code>${e(item.cron_schedule)}</code>` : '<span class="text-muted">Manual</span>'}</td><td class="text-end"><button class="btn btn-sm btn-outline-primary me-2" onclick="UserHttpRequests.editSchedule('${e(item.request_id)}')"><i class="far fa-clock me-1"></i>Schedule</button><button class="btn btn-sm btn-primary" onclick="UserHttpRequests.run('${e(item.request_id)}')"><i class="fas fa-play me-1"></i>Run</button></td></tr>`).join('');
+        $('#userHttpRequestsList').html(`<div class="commands-table-scroll"><table class="commands-table"><thead><tr><th>Request</th><th>Call</th><th>Shared schedule</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="4" class="text-center py-5">No HTTP requests are assigned to this account.</td></tr>'}</tbody></table></div>`);
+    },
+    async run(id) {
+        UserOperationUI.showRunning(`Run HTTP request · ${id}`);
+        const describe = data => { const checks = (data.checks || []).map(check => `${check.passed ? 'PASS' : 'FAIL'} ${check.name}: ${check.detail}`).join('\n'); return `${checks ? checks + '\n\n' : ''}${data.output || ''}`; };
+        try { const response = await API.httpRequests.execute(id); const data = response.data || {}; UserOperationUI.showResult(data.exit_code === 0, `HTTP ${data.http_status || '—'} in ${data.exec_time || '—'} (exit ${data.exit_code ?? 0}, ${data.attempts || 1} attempt(s))${data.error ? ' — ' + data.error : ''}`, describe(data)); }
+        catch (error) { const data = error.data || {}; UserOperationUI.showResult(false, error.message || 'HTTP request failed', describe(data)); }
+    },
+    async editSchedule(id) { const item = this.items.find(value => value.request_id === id); const result = await Swal.fire({ title:`Shared schedule · ${id}`, html:'<p class="text-muted">Enter a five-field cron expression, or clear it for manual execution only.</p>', input:'text', inputValue:item?.cron_schedule || '', inputPlaceholder:'*/5 * * * *', showCancelButton:true, confirmButtonText:'Save schedule', inputValidator:value => value.trim() && value.trim().split(/\s+/).length !== 5 ? 'Use exactly five cron fields.' : undefined }); if (!result.isConfirmed) return; try { await API.user.httpRequestSchedule(id, result.value.trim()); await this.load(); Utils.showSuccess('Shared schedule updated'); } catch (error) { Utils.showError(error.message || 'Failed to update schedule'); } }
+};
+
+window.UserCommands = UserCommands;
+window.UserRunBooks = UserRunBooks;
+window.UserHttpRequests = UserHttpRequests;

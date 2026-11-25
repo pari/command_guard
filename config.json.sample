@@ -1,0 +1,124 @@
+{
+	"version": "0.7.0",
+	"port": 8080,
+	"bind_address": "127.0.0.1",
+	"access_url": "http://127.0.0.1:8080",
+	"cron_enabled": "N",
+	"log_retention_days": 3,
+	"audit_retention_days": 90,
+	"dev_mode": false,
+	"trusted_proxies": [
+		"127.0.0.1",
+		"::1"
+	],
+	"users": [],
+	"variables": {
+		"default_max_output": "2MB"
+	},
+	"disk_monitor": {
+		"enabled": true,
+		"send_alert_once_every": "4h",
+		"daily_summary_enabled": true,
+		"daily_summary_time": "08:00",
+		"default_check_interval": "1h",
+		"default_threshold_value": 5,
+		"default_threshold_unit": "GB",
+		"max_concurrent_host_checks": 10,
+		"email_bar_mode": "free",
+		"email_subject": "[Disk Monitor] {{summary}}",
+		"recipients": {
+			"to": ["admin@example.com"],
+			"cc": []
+		},
+		"volumes": []
+	},
+	"hosts": {
+		"example-linux": {
+			"connection_type": "ssh",
+			"host": "server.example.com",
+			"port": 22,
+			"username": "automation",
+			"password": "CHANGE_ME_BEFORE_STARTING"
+		},
+		"example-private": {
+			"connection_type": "ssh",
+			"host": "10.0.1.20",
+			"port": 22,
+			"username": "automation",
+			"password": "CHANGE_ME_BEFORE_STARTING",
+			"bastion_host_ref": "example-linux"
+		}
+	},
+	"commands": [
+		{
+			"cmd_id": "system-summary",
+			"host_ref": "example-linux",
+			"command": "uptime && df -h / && free -m",
+			"description": "Show uptime, root filesystem usage, and memory usage",
+			"bearer_token": "CHANGE_ME_TO_A_LONG_RANDOM_TOKEN",
+			"max_output_size": "{{default_max_output}}",
+			"log_storage": "local",
+			"skip_if_running": true
+		},
+		{
+			"cmd_id": "kernel-details",
+			"host_ref": "example-linux",
+			"command": "uname -a",
+			"description": "Show operating system and kernel details",
+			"bearer_token": "CHANGE_ME_TO_A_LONG_RANDOM_TOKEN",
+			"max_output_size": "256KB",
+			"log_storage": "local"
+		}
+	],
+	"runbooks": [
+		{
+			"runbook_id": "basic-health-check",
+			"description": "Collect a small read-only health summary from the example host",
+			"bearer_token": "CHANGE_ME_TO_A_LONG_RANDOM_TOKEN",
+			"timeout_seconds": 120,
+			"summary_format": "text",
+			"steps": [
+				{
+					"step_id": "summary",
+					"cmd_id": "system-summary",
+					"timeout_seconds": 60
+				},
+				{
+					"step_id": "kernel",
+					"cmd_id": "kernel-details",
+					"on_failure": "continue",
+					"delay_before_seconds": 1,
+					"retry_count": 1,
+					"retry_delay_seconds": 5,
+					"timeout_seconds": 30
+				}
+			]
+		}
+	],
+	"http_requests": [
+		{
+			"request_id": "example-api-health",
+			"description": "Check that the example API answers with status ok",
+			"method": "GET",
+			"url": "https://api.example.com/health",
+			"query_params": [
+				{ "key": "verbose", "value": "1" }
+			],
+			"headers": [
+				{ "key": "Accept", "value": "application/json" }
+			],
+			"auth": { "type": "bearer", "token": "CHANGE_ME_API_TOKEN" },
+			"timeout_seconds": 30,
+			"retry_count": 2,
+			"retry_delay_seconds": 5,
+			"expected_status": "2xx",
+			"assertions": [
+				{ "type": "json_path_equals", "path": "status", "value": "ok" },
+				{ "type": "max_response_ms", "value": "2000" }
+			],
+			"bearer_token": "CHANGE_ME_TO_A_LONG_RANDOM_TOKEN",
+			"log_storage": "local",
+			"skip_if_running": true
+		}
+	]
+}

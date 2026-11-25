@@ -1,0 +1,17 @@
+.git
+.claude
+config.json
+config.json.*
+!config.json.sample
+pem_files
+logs
+run
+mail_queue
+node_modules
+instance
+cguard
+shexec_go
+cg_sessiond
+server.log
+*.pem
+docs
